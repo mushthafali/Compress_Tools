@@ -73,7 +73,10 @@ app.post('/api/preview', upload.single('image'), async (req, res) => {
         
         let previewBase64 = '';
         if (finalFormat === 'pdf') {
-            const previewJpgBuffer = await sharpInstance.resize(800).jpeg({quality: q}).toBuffer();
+            // Must create a FRESH sharp instance — the original sharpInstance was already consumed above
+            let previewSharp = sharp(inputBuffer).rotate();
+            if (rot > 0) previewSharp = previewSharp.rotate(rot);
+            const previewJpgBuffer = await previewSharp.resize(800).jpeg({ quality: q }).toBuffer();
             previewBase64 = `data:image/jpeg;base64,${previewJpgBuffer.toString('base64')}`;
         } else {
             const mimeType = finalFormat === 'jpg' ? 'image/jpeg' : `image/${finalFormat}`;
