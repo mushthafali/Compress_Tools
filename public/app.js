@@ -275,25 +275,170 @@ function handleFiles(files) {
     }
 }
 
+// ================================================================
+// CLIENT-SIDE IMAGE PROCESSING ENGINE
+// 100% browser-native — no server required (Vercel compatible)
+// ================================================================
+
+/**
+ * Load a src URL into an HTMLImageElement.
+ */
+function _loadImage(src) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload  = () => resolve(img);
+        img.onerror = () => reject(new Error('Failed to load image'));
+        img.src = src;
+    });
+}
+
+/**
+ * Draw `img` onto a canvas, applying rotation and a max-width resize.
+ * Handles 0 / 90 / 180 / 270 degree rotations correctly.
+ */
+function _createRotatedCanvas(img, degrees, maxWidth) {
+    const swap  = degrees === 90 || degrees === 270;
+    const origW = img.naturalWidth;
+    const origH = img.naturalHeight;
+
+    // Output canvas dims after rotation
+    const outW = swap ? origH : origW;
+    const outH = swap ? origW : origH;
+
+    // Scale down to maxWidth if necessary (never upscale)
+    const scale   = outW > maxWidth ? maxWidth / outW : 1;
+    const canvasW = Math.round(outW   * scale);
+    const canvasH = Math.round(outH   * scale);
+    const drawW   = Math.round(origW  * scale);
+    const drawH   = Math.round(origH  * scale);
+
+    const canvas  = document.createElement('canvas');
+    canvas.width  = canvasW;
+    canvas.height = canvasH;
+    const ctx = canvas.getContext('2d');
+
+    ctx.translate(canvasW / 2, canvasH / 2);
+    ctx.rotate((degrees * Math.PI) / 180);
+    ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+
+    return canvas;
+}
+
+/** Promisify canvas.toBlob() */
+function _canvasToBlob(canvas, mime, quality) {
+    return new Promise((resolve, reject) => {
+        canvas.toBlob(
+            blob => (blob ? resolve(blob) : reject(new Error('Canvas toBlob returned null — format may not be supported by this browser.'))),
+            mime,
+            quality
+        );
+    });
+}
+
+/** Promisify FileReader readAsDataURL */
+function _blobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload  = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
+
+/**
+ * Main image processing function — fully client-side.
+ * Replicates the old /api/preview endpoint behaviour using Canvas API.
+ */
 async function processFile(cardId) {
     const dataObj = uploadedFilesManager.get(cardId);
     if (!dataObj) return;
 
-    const formData = new FormData();
-    formData.append('image', dataObj.file);
-    formData.append('format', formatSelectValue);
-    formData.append('quality', qualitySlider.value);
-    formData.append('rotation', dataObj.rotation || 0);
-
     try {
-        const resp = await fetch('/api/preview', { method: 'POST', body: formData });
-        const data = await resp.json();
-        if(data.error) throw new Error(data.error);
+        const file       = dataObj.file;
+        const format     = formatSelectValue.toLowerCase();
+        const qualityVal = parseInt(qualitySlider.value, 10);
+        const qualityFrac = qualityVal / 100;          // 0.0 – 1.0
+        const manualRot  = dataObj.rotation || 0;
 
-        // Merge raw processed data back to manager map
-        uploadedFilesManager.set(cardId, { ...dataObj, ...data });
-        updateCardUI(cardId, dataObj.file.name);
+        // ── 1. Load image into HTMLImageElement ──────────────────────────
+        const objectUrl = URL.createObjectURL(file);
+        const img = await _loadImage(objectUrl);
+        URL.revokeObjectURL(objectUrl);
+
+        // ── 2. Auto-detect EXIF orientation ──────────────────────────────
+        let exifDeg = 0;
+        if (typeof exifr !== 'undefined') {
+            try {
+                const orient = await exifr.orientation(file);
+                // Map EXIF values 1-8 → rotation degrees
+                const orientMap = { 1: 0, 2: 0, 3: 180, 4: 180, 5: 90, 6: 90, 7: 270, 8: 270 };
+                exifDeg = orientMap[orient] || 0;
+            } catch (_) { /* no EXIF data — skip */ }
+        }
+
+        const totalRot = (exifDeg + manualRot) % 360;
+
+        // ── 3. Render to canvas (rotated + max 1920px resize) ────────────
+        const canvas = _createRotatedCanvas(img, totalRot, 1920);
+
+        // ── 4. Original preview — high-quality JPEG of the rotated source ─
+        const originalBase64 = canvas.toDataURL('image/jpeg', 0.92);
+
+        // ── 5. Compress to the chosen output format ───────────────────────
+        let finalFormat = format;
+        let compressedBlob;
+        let previewBase64;
+
+        if (finalFormat === 'pdf') {
+            // Canvas → JPEG → embed into a PDF document via pdf-lib (loaded via CDN)
+            const jpegBlob   = await _canvasToBlob(canvas, 'image/jpeg', qualityFrac);
+            const jpegBuffer = await jpegBlob.arrayBuffer();
+
+            const { PDFDocument } = PDFLib;
+            const pdfDoc  = await PDFDocument.create();
+            const jpgImg  = await pdfDoc.embedJpg(new Uint8Array(jpegBuffer));
+            const page    = pdfDoc.addPage([jpgImg.width, jpgImg.height]);
+            page.drawImage(jpgImg, { x: 0, y: 0, width: jpgImg.width, height: jpgImg.height });
+            const pdfBytes = await pdfDoc.save();
+
+            compressedBlob = new Blob([pdfBytes], { type: 'application/pdf' });
+            previewBase64  = canvas.toDataURL('image/jpeg', qualityFrac); // JPEG preview for card
+
+        } else if (finalFormat === 'jpg' || finalFormat === 'jpeg') {
+            finalFormat    = 'jpg';
+            compressedBlob = await _canvasToBlob(canvas, 'image/jpeg', qualityFrac);
+            previewBase64  = canvas.toDataURL('image/jpeg', qualityFrac);
+
+        } else if (finalFormat === 'png') {
+            // PNG is lossless — quality param is ignored by browsers
+            compressedBlob = await _canvasToBlob(canvas, 'image/png');
+            previewBase64  = canvas.toDataURL('image/png');
+
+        } else {
+            // Default: WebP
+            finalFormat    = 'webp';
+            compressedBlob = await _canvasToBlob(canvas, 'image/webp', qualityFrac);
+            previewBase64  = canvas.toDataURL('image/webp', qualityFrac);
+        }
+
+        // ── 6. Convert blob → base64 for export ──────────────────────────
+        const fullBase64DataUrl  = await _blobToBase64(compressedBlob);
+        const rawCompressedBase64 = fullBase64DataUrl.split(',')[1]; // strip "data:...;base64," prefix
+
+        // ── 7. Persist result & update UI ────────────────────────────────
+        uploadedFilesManager.set(cardId, {
+            ...dataObj,
+            originalSize:      file.size,
+            compressedSize:    compressedBlob.size,
+            originalBase64,
+            previewBase64,
+            finalFormat,
+            rawCompressedBase64,
+        });
+
+        updateCardUI(cardId, file.name);
         checkExportReady();
+
     } catch (err) {
         showToast('Processing Error: ' + err.message);
         document.getElementById(cardId)?.remove();

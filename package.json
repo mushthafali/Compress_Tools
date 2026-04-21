@@ -1,18 +1,16 @@
 {
-  "name": "sharp",
+  "name": "pixelflow",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "Client-side image optimizer & PDF tools. 100% offline, Vercel-compatible.",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
-  "keywords": [],
+  "keywords": ["image", "optimizer", "pdf", "tools"],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
-    "express": "^4.19.2",
-    "multer": "^1.4.5-lts.1",
-    "pdf-lib": "^1.17.1",
-    "sharp": "^0.34.5"
+    "express": "^4.19.2"
   }
 }
