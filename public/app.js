@@ -90,6 +90,25 @@ document.addEventListener('click', () => {
 });
 
 function switchModule(module) {
+    // --- Auto Clear All saat ganti modul ---
+    // Reset image optimizer state
+    uploadedFilesManager.clear();
+    cardsList.innerHTML = '';
+    gallery.classList.remove('active'); gallery.classList.add('hidden');
+    dropzone.classList.remove('hidden'); dropzone.classList.add('active');
+
+    // Reset PDF tools state
+    uploadedPdfFiles = [];
+    splitPdfBlob = null;
+    splitPdfPages = [];
+    pdfList.innerHTML = '';
+    if(pageRangeInput) pageRangeInput.value = '';
+    pdfGallery.classList.remove('active'); pdfGallery.classList.add('hidden');
+    pdfDropzone.classList.remove('hidden'); pdfDropzone.classList.add('active');
+
+    exportBtn.disabled = true;
+    // --- End Auto Clear ---
+
     document.querySelectorAll('.tool-settings').forEach(el => { el.classList.add('hidden'); el.style.display = 'none'; });
     document.querySelectorAll('.tool-view').forEach(el => { el.classList.add('hidden'); el.style.display = 'none'; });
     
